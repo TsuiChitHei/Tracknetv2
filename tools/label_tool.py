@@ -8,8 +8,12 @@ import argparse
 import sys
 import time
 
-# python label_tool.py ./dataset/match1/videos/1_10_12.mp4 --csv_dir dataset/match/labels
+# python tools/label_tool.py match/videos/clip.mp4 --csv_dir match/labels
+# python tools/label_tool.py match/videos/clip.mp4 --csv_dir match/labels --step 3
 # 若不加csv_dir,则会默认从mp4文件同级目录读取csv
+#
+# With --step N: n/p jump N frames. Left-click marks a keyframe; frames between
+# two visible keyframes are filled by linear interpolation.
 
 
 # state 0:hidden  1:visible
@@ -31,6 +35,8 @@ keybindings = {
     'circle_grow':   [ ord('='), ord('+') ],
     'circle_shrink': [ ord('-'), ],
 
+    'mark_hidden':   [ ord('h'), ],
+
     'quit':          [ ord('q'), ],
 }
 
@@ -39,6 +45,8 @@ keybindings = {
 class VideoPlayer():
     def __init__(self, opt) -> None:
         self.jump = 36
+        self.step = max(1, int(opt.step))
+        self.keyframes = set()
 
         self.cap = cv2.VideoCapture(opt.video_path)
         self.width  = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -78,11 +86,17 @@ class VideoPlayer():
         self.window = cv2.namedWindow('Frame', cv2.WINDOW_NORMAL)
         cv2.resizeWindow('Frame', 1280, 720)
 
-        _, self.frame = self.cap.read()
+        ret, self.frame = self.cap.read()
+        if not ret or self.frame is None:
+            raise RuntimeError(
+                f'Failed to read the first frame from {opt.video_path}. '
+                'In Git Bash use forward slashes, e.g. match/videos/clip.mp4'
+            )
         self.frame_num = 0
 
         self.piece_start = 0
         self.piece_end = 0
+        self._finished = False
 
         if os.path.exists(self.csv_path):
             self.info = pd.read_csv(self.csv_path)
@@ -106,6 +120,10 @@ class VideoPlayer():
 
             else:
                 self.info = {k: list(v.values()) for k, v in self.info.to_dict().items()}
+                # Existing visible labels count as keyframes so reopening a CSV keeps them.
+                self.keyframes = {
+                    i for i in range(self.frames) if int(self.info['visible'][i]) == 1
+                }
                 print("Load labeled {} successfully.".format(self.csv_path))
         else:
             print("Create new dictionary")
@@ -118,7 +136,10 @@ class VideoPlayer():
                 self.info['x'].append(0)
                 self.info['y'].append(0)
                 
-            print("pandas dataframe len: {}".format(len(self.info)))
+            print("Created labels for {} frames.".format(self.frames))
+
+        if self.step > 1:
+            print(f"Step mode: n/p jump {self.step} frames. Left-click interpolates between keyframes.")
 
         cv2.setMouseCallback('Frame',self.markBall)
         self.display()
@@ -141,32 +162,91 @@ class VideoPlayer():
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_num)
         print("save piece succefully!")
 
+    def seek(self, frame_num):
+        frame_num = max(0, min(int(frame_num), self.frames - 1))
+        self.frame_num = frame_num
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_num)
+        ret, self.frame = self.cap.read()
+        if not ret or self.frame is None:
+            print(f"Warning: failed to read frame {self.frame_num}")
+
+    def interpolate_between_keyframes(self):
+        """Fill non-keyframe frames by linear interpolation between visible keyframes."""
+        if len(self.keyframes) < 2:
+            return
+
+        keys = sorted(self.keyframes)
+        for a, b in zip(keys, keys[1:]):
+            if b <= a + 1:
+                continue
+
+            va = int(self.info['visible'][a])
+            vb = int(self.info['visible'][b])
+
+            if va == 1 and vb == 1:
+                xa, ya = self.info['x'][a], self.info['y'][a]
+                xb, yb = self.info['x'][b], self.info['y'][b]
+                span = b - a
+                for i in range(a + 1, b):
+                    if i in self.keyframes:
+                        continue
+                    t = (i - a) / span
+                    self.info['frame_num'][i] = i
+                    self.info['x'][i] = xa + t * (xb - xa)
+                    self.info['y'][i] = ya + t * (yb - ya)
+                    self.info['visible'][i] = 1
+            else:
+                # One or both ends hidden: clear interpolated frames in the gap.
+                for i in range(a + 1, b):
+                    if i in self.keyframes:
+                        continue
+                    self.info['frame_num'][i] = i
+                    self.info['x'][i] = 0
+                    self.info['y'][i] = 0
+                    self.info['visible'][i] = 0
+
+    def mark_hidden(self):
+        self.info['frame_num'][self.frame_num] = self.frame_num
+        self.info['x'][self.frame_num] = 0
+        self.info['y'][self.frame_num] = 0
+        self.info['visible'][self.frame_num] = 0
+        self.keyframes.add(self.frame_num)
+        self.interpolate_between_keyframes()
+        self.display()
+
     def markBall(self, event, x, y, flags, param):
-        x /= self.width
-        y /= self.height
+        nx = x / self.width
+        ny = y / self.height
         if event == cv2.EVENT_LBUTTONDOWN:
             self.info['frame_num'][self.frame_num] = self.frame_num
-            self.info['x'][self.frame_num] = x
-            self.info['y'][self.frame_num] = y
+            self.info['x'][self.frame_num] = nx
+            self.info['y'][self.frame_num] = ny
             self.info['visible'][self.frame_num] = 1
+            self.keyframes.add(self.frame_num)
+            self.interpolate_between_keyframes()
+            if self.frame_num < self.frames - 1:
+                self.seek(self.frame_num + self.step)
+            self.display()
 
-        elif event == cv2.EVENT_RBUTTONDBLCLK:
-            self.info['frame_num'][self.frame_num] = self.frame_num
-            self.info['x'][self.frame_num] = 0
-            self.info['y'][self.frame_num] = 0
-            self.info['visible'][self.frame_num] = 0
+        # Single right-click: OpenCV often never fires RBUTTONDBLCLK on Windows.
+        elif event == cv2.EVENT_RBUTTONDOWN:
+            self.mark_hidden()
 
 
     def display(self):
+        if self.frame is None:
+            return
         res_frame = self.frame.copy()
         res_frame = cv2.putText(res_frame, state_name[self.info['visible'][self.frame_num]], (100, 110), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 2, cv2.LINE_AA)
         res_frame = cv2.putText(res_frame, "Frame: {}, Total: {}".format(int(self.frame_num+1), int(self.frames)), (100, 50), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 2, cv2.LINE_AA)
         res_frame = cv2.putText(res_frame, "Piece: {}-{}".format(int(self.piece_start+1), int(self.piece_end+1)), (100, 170), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 2, cv2.LINE_AA)
+        res_frame = cv2.putText(res_frame, "Step: {}".format(self.step), (100, 230), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 0), 2, cv2.LINE_AA)
 
         if self.info['visible'][self.frame_num]:
             x = int(self.info['x'][self.frame_num] * self.width)
             y = int(self.info['y'][self.frame_num] * self.height)
-            cv2.circle(res_frame, (x, y), self.circle_size, (0, 0, 255), -1)
+            color = (0, 255, 255) if self.frame_num in self.keyframes else (0, 0, 255)
+            cv2.circle(res_frame, (x, y), self.circle_size, color, -1)
 
         cv2.imshow('Frame', res_frame)
 
@@ -177,59 +257,28 @@ class VideoPlayer():
     def main_loop(self):
         key = cv2.waitKeyEx(1)
         if key in keybindings['first_frame']:
-            self.frame_num = 0
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_num)
-            ret, self.frame = self.cap.read()
-
-            assert(ret==True)
+            self.seek(0)
 
         elif key in keybindings['last_frame']:
-            self.frame_num = self.frames-1                  
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_num)       # cap.set时, frame_num不用加1
-            ret, self.frame = self.cap.read()
-
-            print(type(self.frame))
-            assert(ret==True)
-
+            self.seek(self.frames - 1)
 
         elif key in keybindings['next']:
-            if self.frame_num < self.frames-1:
-                ret, self.frame = self.cap.read()
-                self.frame_num += 1
-
-                assert(ret==True)
+            if self.frame_num < self.frames - 1:
+                self.seek(self.frame_num + self.step)
 
         elif key in keybindings['prev']:
             time.sleep(0.01)
             if self.frame_num > 0:
-                self.frame_num -= 1
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_num)
-                _, self.frame = self.cap.read()
+                self.seek(self.frame_num - self.step)
 
 
         elif key in keybindings['forward_frames']:
-            if self.frame_num < self.frames-1:
-                for _ in range(self.jump):
-                    if self.frame_num == self.frames-2:      # 倒数第二帧，最后一帧使用read()
-                        break
-
-                    self.cap.grab()                         # cap.grab跳过帧, frame_num加1
-                    self.frame_num += 1
-   
-                ret, self.frame = self.cap.read()
-                self.frame_num += 1
+            if self.frame_num < self.frames - 1:
+                self.seek(self.frame_num + self.jump)
 
         
         elif key in keybindings['backward_frames']:
-            if self.frame_num < self.jump:
-                self.frame_num = 0
-            else:
-                self.frame_num -= self.jump
-
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_num)
-            ret, self.frame = self.cap.read()
-
-            assert(ret==True)
+            self.seek(self.frame_num - self.jump)
 
 
         elif key in keybindings['circle_grow']:
@@ -237,6 +286,9 @@ class VideoPlayer():
         elif key in keybindings['circle_shrink']:
             self.circle_size -= 1
 
+
+        elif key in keybindings['mark_hidden']:
+            self.mark_hidden()
 
         elif key in keybindings['piece_start']:
             self.piece_start = self.frame_num
@@ -255,20 +307,33 @@ class VideoPlayer():
 
 
     def finish(self):
-        self.cap.release()
-        cv2.destroyAllWindows()
+        if getattr(self, '_finished', True):
+            return
+        self._finished = True
+        if getattr(self, 'cap', None) is not None:
+            self.cap.release()
+        try:
+            cv2.destroyAllWindows()
+        except cv2.error:
+            pass
+        if not hasattr(self, 'info'):
+            return
         df = pd.DataFrame.from_dict(self.info).sort_values(by=['frame_num'], ignore_index=True)
+        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(self.csv_path, index=False)
+        print(f"Saved labels to {self.csv_path}")
 
 
     def __del__(self):
-        self.finish()
+        if hasattr(self, 'info'):
+            self.finish()
 
 
 def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('video_path', type=str, nargs='?', default=None, help='Path to the video file.')
     parser.add_argument('--csv_dir', type=str, default=None, help='Path to the directory where csv file should be saved. If not specified, csv file will be saved in the same directory as the video file.')
+    parser.add_argument('--step', type=int, default=1, help='Frames to jump with n/p. Left-click interpolates between keyframes. Example: --step 3')
     parser.add_argument('--remove_duplicate_frames', type=bool, default=False, help='Should identical consecutie frames be reduces to one frame.')
     opt = parser.parse_args()
     return opt

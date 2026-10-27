@@ -147,7 +147,7 @@ def main(opt):
 
             count += 1
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        if b_view_img and (cv2.waitKey(1) & 0xFF == ord('q')):
             break
 
     if b_save_txt:
@@ -160,7 +160,8 @@ def main(opt):
 
     out.release()
     vid_cap.release()
-    cv2.destroyAllWindows()
+    if b_view_img:
+        cv2.destroyAllWindows()
 
 
 if __name__ == '__main__':

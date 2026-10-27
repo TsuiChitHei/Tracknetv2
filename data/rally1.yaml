@@ -1,0 +1,5 @@
+path: ./match
+train:
+  - images/rally1
+val:
+  - images/rally1

@@ -19,14 +19,14 @@ class Albumentations:
         prefix = "albumentations: "
 
         T = [
-            A.RandomResizedCrop(height=imgsz[0], width=imgsz[1], scale=(0.8, 1.0), ratio=(0.9, 1.11), p=0.0),
+            A.RandomResizedCrop(size=(imgsz[0], imgsz[1]), scale=(0.8, 1.0), ratio=(0.9, 1.11), p=0.0),
             A.Blur(p=0.1),
             A.MedianBlur(p=0.1),
             A.ToGray(p=0.1),
             A.CLAHE(p=0.1),
             A.RandomBrightnessContrast(p=0.0),
             A.RandomGamma(p=0.0),
-            A.ImageCompression(quality_lower=75, p=0.0),
+            A.ImageCompression(quality_range=(75, 100), p=0.0),
         ]  # transforms
         self.transform = A.Compose(T, keypoint_params=A.KeypointParams(format="xy", remove_invisible=False))
 
