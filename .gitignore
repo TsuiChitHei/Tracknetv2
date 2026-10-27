@@ -1,3 +1,22 @@
 .vscode
 __pycache__
 runs
+
+# Large media / training assets
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.jpg
+*.jpeg
+*.png
+*.pt
+*.pth
+*.onnx
+*.zip
+
+# Local dataset (frames + labels + videos)
+match/
+
+# Local weights folder
+weights/
