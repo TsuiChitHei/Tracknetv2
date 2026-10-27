@@ -15,8 +15,12 @@ runs
 *.onnx
 *.zip
 
-# Local dataset (frames + labels + videos)
-match/
+# Keep match/ folder structure on remote, ignore contents
+match/**
+!match/**/
+!match/**/.gitkeep
 
-# Local weights folder
-weights/
+# Keep weights/ folder on remote, ignore contents
+weights/**
+!weights/**/
+!weights/**/.gitkeep
